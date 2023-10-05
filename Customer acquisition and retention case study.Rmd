@@ -1,0 +1,534 @@
+---
+title: "customer retention"
+author: "Praveena munnam"
+date: "2023-04-13"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(caret)
+library(corrgram)
+library(GGally)
+library(tidyverse)
+library(plyr) 
+library(PerformanceAnalytics)
+library(SMCRM) # CRM data
+library(dplyr) # data wrangling
+library(tidyr) # data wrangling
+library(ggplot2) # plotting
+library(survival) # survival
+library(rpart) # DT
+library(randomForestSRC) # RF
+
+# theme for nice plotting
+theme_nice <- theme_classic()+
+                theme(
+                  axis.line.y.left = element_line(colour = "black"),
+                  axis.line.y.right = element_line(colour = "black"),
+                  axis.line.x.bottom = element_line(colour = "black"),
+                  axis.line.x.top = element_line(colour = "black"),
+                  axis.text.y = element_text(colour = "black", size = 12),
+                  axis.text.x = element_text(color = "black", size = 12),
+                  axis.ticks = element_line(color = "black")) +
+                theme(
+                  axis.ticks.length = unit(-0.25, "cm"), 
+                  axis.text.x = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")), 
+                  axis.text.y = element_text(margin=unit(c(0.5,0.5,0.5,0.5), "cm")))
+```
+
+Dataset
+
+```{r}
+data("acquisitionRetention")
+```
+
+```{r}
+ARData = acquisitionRetention
+```
+
+# structure of the data
+
+```{r}
+str(ARData)
+```
+
+```{r}
+summary(ARData)
+```
+
+
+## checking for NA values
+
+```{r}
+sum(is.na(ARData))
+```
+
+There are no NA's in the dataset.
+
+## exploratory analysis
+
+Let us check if there any correlations in the data.
+
+```{r}
+library(corrplot)
+corrplot(cor(acquisitionRetention [,-c(1,7,8,10)]), method = "number", diag = F, 
+ addgrid.col = "blue", number.cex = 0.8, tl.col = "Blue", outline = "blue")
+```
+
+
+```{r}
+chart.Correlation(ARData, histogram = TRUE, pch=19)
+```
+correalted variables are duration,profit,ret_exp,acq_exp_sq,ret_exp_sq,freq,freq_sq,crossbuy,sow. 
+Now let us plot the boxplot for the correlated variables.
+
+## Boxplot
+
+```{r}
+par(mfrow=c(3,3))
+boxplot(duration ~ acquisition, data=ARData, ylab='duration', xlab='acquisition', col='#9933CC')
+boxplot(profit ~ acquisition, data=ARData, ylab='profit', xlab='acquisition', col='#FF3300')
+boxplot(ret_exp ~ acquisition, data=ARData, ylab='ret_exp', xlab='acquisition', col='#000080')
+boxplot(acq_exp_sq ~ acquisition, data=ARData, ylab='acq_exp_sq', xlab='acquisition', col='#33CC00')
+boxplot(ret_exp_sq ~ acquisition, data=ARData, ylab='ret_exp_sq', xlab='acquisition', col='#99CCFF')
+boxplot(freq ~ acquisition, data=ARData, ylab='freq', xlab='acquisition', col='#FF6347')
+boxplot(freq_sq ~ acquisition, data=ARData, ylab='freq_sq', xlab='acquisition', col='#0000FF')
+boxplot(crossbuy ~ acquisition, data=ARData, ylab='crossbuy', xlab='acquisition', col='#9900FF')
+boxplot(sow ~ acquisition, data=ARData, ylab='sow', xlab='acquisition', col='#FFFF00')
+```
+We see that all variables, with the exception of acq_exp_sq, will cause acquisition to zero if that particular variable is equal to zero, or is negative (as in the case of profit). None of these will be in the final model. I’m going to exclude acq_exp_sq because it is merely a square of acq_exp.act_exp_sq is the square of the variable act_exp, we need to use the act_exp variable in the model in addition to industry, revenue, and employees.
+
+```{r}
+ARData$acquisition = as.factor(ARData$acquisition)
+```
+
+```{r}
+set.seed(123)
+
+idx.train = sample(1:nrow(ARData), size = 0.8 * nrow(ARData))
+train.df = ARData[idx.train,]
+test.df = ARData[-idx.train,]
+```
+
+```{r}
+set.seed(123)
+
+forest1 = rfsrc(acquisition ~ acq_exp + industry + revenue + employees, #Only include variables based on prior analysis.
+                            data = train.df,
+                            importance = TRUE, 
+                            ntree = 1000)
+
+forest1
+```
+Based on our model results, it appears that we achieved a training accuracy rate of 79.75%.
+
+## Random Forest Model Predictions - acquisition
+
+```{r}
+#predicted class labels - used for classification problems
+rf1_pred = predict(forest1, test.df)$class
+
+#temporary df to bind prediction to original dataframe
+temp1_df = cbind(ARData,rf1_pred)
+
+#new dataframe to filter the new dataframe for a value of 1, signaling successful customer acquisition
+data_new = temp1_df %>% filter(rf1_pred == 1)
+summary(data_new)
+```
+
+```{r}
+str(data_new)
+```
+
+
+
+## We now apply this model to the entire  dataset and we need to build a regression model on the data where the forest1  model had predicted acquisition of 1. Since we have a small test set of only 99 observations, and from there an even smaller dataset where forest1 had predicted acquisition of 1. I’m going to take the forest1 predictions and add them into the dataframe of test_data, and call it pred_data.
+```{r}
+predicted_duration <- predict(forest1,ARData)$predicted
+pred_data <- cbind(ARData,predicted_duration)
+
+total_actual_duration <- sum(pred_data$duration)
+total_predicted_duration <- sum(pred_data$predicted_duration)
+
+cat("Total Actual Duration = ", total_actual_duration)
+
+```
+
+```{r}
+summary(data_new)
+```
+
+```{r}
+chart.Correlation(data_new[ ,c(3:6,9,11,12,14,15)], histogram=TRUE, pch=19)
+```
+Random Forest with  duration as the response variable
+```{r}
+set.seed(123)
+
+forest2 = rfsrc(duration~ acq_exp + industry + revenue + employees, 
+                 data = data_new,
+                 importance = TRUE,
+                 ntree = 1000)
+
+forest2
+```
+
+## 2) Compute variable importance to detect interactions and optimize hyperparameters for acquired customers.
+
+1. variable importance
+```{r}
+forest2$importance
+```
+
+```{r}
+data.frame(importance = forest2$importance) %>%
+  tibble::rownames_to_column(var = "variable") %>%
+  ggplot(aes(x = reorder(variable,importance), y = importance)) +
+    geom_bar(stat = "identity", fill = "mediumaquamarine", color = "black")+
+    coord_flip() +
+     labs(x = "Variables", y = "Variable importance")+
+     theme_nice
+```
+
+## From the  above, variables are displayed in order of importance in the prediction of target duration: acq_exp, employees, , revenue, and industry. The variable with the highest value is the most important.
+
+2. Minimal depth
+
+```{r}
+mindepth = max.subtree(forest2,
+                        sub.order = TRUE)
+
+# first order depths
+print(round(mindepth$order, 3)[,1])
+```
+
+
+```{r}
+data.frame(md = round(mindepth$order, 3)[,1]) %>%
+  tibble::rownames_to_column(var = "variable") %>%
+  ggplot(aes(x = reorder(variable,desc(md)), y = md)) +
+    geom_bar(stat = "identity", fill = "mediumaquamarine", color = "black", width = 0.2)+
+    coord_flip() +
+     labs(x = "Variables", y = "Minimal Depth")+
+     theme_nice
+```
+## comments:
+
+We observe that the above variables are displayed in order of importance in the prediction of duration: employees, , revenue, acq_exp and industry. It is important to note that when analyzing minimal depth, the variable with the least value is the most important. The most important variable is going to split closest to the decision tree.
+
+
+
+
+
+
+```{r}
+# interactions
+mindepth$sub.order
+
+as.matrix(mindepth$sub.order) %>%
+  reshape2::melt() %>%
+  data.frame() %>%
+  ggplot(aes(x = Var1, y = Var2, fill = value)) +
+    scale_x_discrete(position = "top") +
+    geom_tile(color = "white") +
+    viridis::scale_fill_viridis("Relative min. depth") +
+    labs(x = "", y = "") +
+    theme_bw()
+
+
+```
+```{r}
+# interactions  cross-check with vimp
+find.interaction(forest2,
+                      method = "vimp",
+                      importance = "permute")
+       
+```
+
+## comments
+
+This is a joint-VIMP approach. Two variables are paired and their paired VIMP calculated (refered to as 'Paired' importance). The VIMP for each separate variable is also calculated. The sum of these two values is refered to as 'Additive' importance. A large positive or negative difference between 'Paired' and 'Additive' indicates an association worth pursuing if the univariate VIMP for each of the paired-variables is reasonably large. 
+
+## Preparing the new data for modelling
+
+```{r}
+set.seed(123)
+
+idx.train_new = sample(1:nrow(data_new), size = 0.8 * nrow(data_new))
+train.df_new = data_new[idx.train_new,]
+test.df_new = data_new[-idx.train_new,]
+```
+
+Random Forest Untuned  Model without Interactions
+```{r}
+forest.no_interaction.untuned = rfsrc(duration ~ acq_exp + industry + revenue + employees, 
+                            data = train.df_new, 
+                            importance = TRUE, 
+                            ntree = 1000)
+
+```
+
+```{r}
+## Tuning a forest hyper-parameters for acquired customers without interaction
+set.seed(1)
+
+mtry.values <- seq(4,6,1)
+nodesize.values <- seq(4,8,2)
+ntree.values <- seq(4e3,6e3,1e3)
+# Create a data frame containing all combinations 
+hyper_grid = expand.grid(mtry = mtry.values, nodesize = nodesize.values, ntree = ntree.values)
+
+# Create an empty vector to store OOB error values
+oob_err = c()
+
+# Write a loop over the rows of hyper_grid to train the grid of models
+for (i in 1:nrow(hyper_grid)) {
+
+   # Train a Random Forest model
+   model = rfsrc(duration ~ acq_exp + industry + revenue + employees, 
+                 data = train.df_new,
+                 mtry = hyper_grid$mtry[i],
+                 nodesize = hyper_grid$nodesize[i],
+                 ntree = hyper_grid$ntree[i])  
+  
+                          
+    # Store OOB error for the model                      
+    oob_err[i] <- model$err.rate[length(model$err.rate)]
+}
+
+# Identify optimal set of hyperparmeters based on OOB error
+opt_i <- which.min(oob_err)
+print(hyper_grid[opt_i,])
+```
+## Tuning random forest model with optimal parameters
+
+```{r}
+ set.seed(123)
+
+forest.hyper = rfsrc(duration ~ acq_exp + industry + revenue + employees, 
+                     data = train.df_new,
+                     mtry = 6,
+                     nodesize = 8,
+                     ntree = 6000)
+```
+
+## Logistic regression and decision tree for duration prediction
+
+```{r}
+#Logistic Regression
+regression.logistic = glm(duration ~ acq_exp + industry + revenue + employees, data = train.df_new)
+
+#Decision Tree Model
+dt.model = rpart(duration ~ acq_exp + industry + revenue + employees, 
+                             data = train.df_new)
+rattle::fancyRpartPlot(dt.model, sub = "")
+```
+
+## model predictions on test data set for duration
+
+```{r}
+error.df = 
+  data.frame(pred1 = predict(forest.no_interaction.untuned,newdata = test.df_new)$predicted,
+             pred2 = predict(forest.hyper, newdata = test.df_new)$predicted,
+             pred3 = predict(regression.logistic, newdata = test.df_new),
+             pred4 = predict(dt.model, newdata = test.df_new),
+             actual = test.df_new$duration, 
+             customer = test.df_new$customer) %>%
+  mutate_at(.funs = funs(abs.error = abs(actual - .),
+                         abs.percent.error = abs(actual - .)/abs(actual)),
+            .vars = vars(pred1:pred4))
+```
+
+```{r}
+error.df %>%
+  summarise_at(.funs = funs(mae = mean(.)), 
+               .vars = vars(pred1_abs.error:pred4_abs.error))
+```
+```{r}
+error.df2 =
+  error.df %>%
+  left_join(test.df_new, "customer") %>%
+  mutate(customer_portfolio = cut(x = rev <- revenue, 
+               breaks = qu <- quantile(rev, probs = seq(0, 1, 0.25)),
+               labels = names(qu)[-1],
+               include.lowest = T)) 
+
+portfolio.mae = 
+  error.df2 %>%
+  group_by(customer_portfolio) %>%
+  summarise_at(.funs = funs(mae = mean(.)), 
+               .vars = vars(pred1_abs.error:pred4_abs.error)) %>%
+  ungroup()
+```
+
+```{r}
+portfolio.errors = 
+  portfolio.mae %>%
+  gather(key = error_type, value = error, -customer_portfolio) %>%
+  mutate(error_type2 = ifelse(grepl(pattern = "mae", error_type),"MAE","MAE"),
+         model_type = ifelse(grepl(pattern = "pred1", error_type),"Untuned Forest",
+                        ifelse(grepl(pattern = "pred2", error_type),"Tuned Forest",
+                          ifelse(grepl(pattern = "pred3", error_type),"Logistic Regression", "Decision Tree")))) 
+
+
+ggplot(portfolio.errors, aes(x = customer_portfolio, 
+                             y = error, 
+                             color = model_type, 
+                             group = model_type))+
+  geom_line(size = 1.02)+
+  geom_point(shape = 15) +
+  
+  scale_color_brewer(palette = "Set1") +
+  labs(y = "Error", x = "Customer portfolios")+
+  theme_nice +
+  theme(legend.position = "top")+
+  guides(color = guide_legend(title = "Model Type", size = 4,nrow = 2,byrow = TRUE))
+```
+## comments
+
+Based on the above results, the Untuned Random Forest model and Tuned Random Forest model both maintained the lowest error rate throughout each quartile of the customer base. The Tuned Random Forest model appears to have performed better than all the models.The Decision Tree has also performed better. Logistic regression has the more error rate than all the models.
+
+3) Compare the accuracy of model with a decision trees and logistic regression
+model for acquiring customers.
+
+## hyper parameters for  acquiring customers 
+```{r}
+# Establish a list of possible values for hyper-parameters
+mtry.values <- seq(4,6,1)
+nodesize.values <- seq(4,8,2)
+ntree.values <- seq(4e3,6e3,1e3)
+
+# Create a data frame containing all combinations 
+hyper_grid = expand.grid(mtry = mtry.values, nodesize = nodesize.values, ntree = ntree.values)
+
+# Create an empty vector to store OOB error values
+oob_err = c()
+
+# Write a loop over the rows of hyper_grid to train the grid of models
+for (i in 1:nrow(hyper_grid)) {
+
+   # Train a Random Forest model
+   model = rfsrc(acquisition ~ acq_exp + industry + revenue + employees, 
+                 data = train.df,
+                 mtry = hyper_grid$mtry[i],
+                 nodesize = hyper_grid$nodesize[i],
+                 ntree = hyper_grid$ntree[i])  
+  
+                          
+    # Store OOB error for the model                      
+    oob_err[i] <- model$err.rate[length(model$err.rate)]
+}
+
+# Identify optimal set of hyperparmeters based on OOB error
+opt_i <- which.min(oob_err)
+print(hyper_grid[opt_i,])
+```
+
+```{r}
+set.seed(123)
+
+forest_acquisition = rfsrc(acquisition ~ acq_exp + industry + revenue + employees, 
+                     data = train.df,
+                     mtry = 5,
+                     nodesize = 6,
+                     ntree = 4000)
+
+forest_acquisition
+```
+## predcitions on test data
+
+```{r}
+pred1_acq = predict(forest_acquisition,newdata = test.df)$class
+```
+## accuracy of random forest
+
+```{r}
+confusionmatrix.RF = confusionMatrix(as.factor(pred1_acq), test.df$acquisition, positive = '1')
+confusionmatrix.RF
+```
+
+## decision tree
+
+```{r}
+## Build model to predict acquisition
+decision.tree.acquisition = rpart(as.factor(acquisition) ~ acq_exp + 
+                     industry + 
+                     revenue + 
+                     employees, 
+                     data = train.df) 
+
+rattle::fancyRpartPlot(decision.tree.acquisition, sub = "")
+```
+## predictions on decision tree
+```{r}
+pred2_acq = predict(decision.tree.acquisition, newdata = test.df, type = "class")
+```
+
+## Accuracy of decision tree
+
+```{r}
+confusionmatrix.DT = confusionMatrix(as.factor(pred2_acq), test.df$acquisition, positive = '1')
+confusionmatrix.DT
+```
+
+ logistic regression with acq_exp_sq and interaction term we found between acq_exp and employees
+
+
+```{r}
+
+logistic.regression.acquisition = glm(acquisition ~ + acq_exp + industry + revenue + employees, 
+                                      data = train.df, family = "binomial")
+
+summary(logistic.regression.acquisition)
+```
+
+## predictions for logistic regression
+```{r}
+
+pred3_acq = predict(logistic.regression.acquisition, newdata = test.df)
+pred3_acq = ifelse(pred3_acq > 1.4, 1, 0)
+```
+
+## Accuracy
+
+```{r}
+confusionmatrix.LR = confusionMatrix(as.factor(pred2_acq), test.df$acquisition, positive = '1')
+confusionmatrix.LR
+```
+
+
+## Comparing accuracy
+
+```{r}
+pred1.accuracy = confusionmatrix.RF$overall[1]
+pred2.accuracy = confusionmatrix.DT$overall[1]
+pred3.accuracy = confusionmatrix.LR$overall[1]
+
+```
+
+
+```{r}
+accuracy = data.frame(round(pred1.accuracy,2), round(pred2.accuracy,2), round(pred3.accuracy,2))
+colnames(accuracy) <- c("Random Forest", "Decision Tree ", " Logistic Regression")
+
+accuracy
+```
+Random forest gave us the best accuracy. Decision tree and LR performed same.
+
+## Partial Dependance plots for tuned random forest (acqusition)
+
+```{r}
+plot.variable(forest_acquisition, partial=TRUE)
+```
+## Partial Dependance plots for tuned random forest (duration)
+
+```{r}
+plot.variable(forest.hyper, partial=TRUE)
+```
+
